@@ -36,9 +36,7 @@ async function getRandomFact(db: D1Database, object: string) {
 
 app.get('/', (c) => {
   return c.json({
-    status: 'online',
-    endpoints: ['/all/:object', '/img/:object', '/fact/:object'],
-    objects: OBJECTS,
+    status: 'API is online.',
   })
 })
 
