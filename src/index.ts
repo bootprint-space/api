@@ -34,6 +34,14 @@ async function getRandomFact(db: D1Database, object: string) {
   return { fact: result.fact, fact_id: result.id }
 }
 
+app.get('/', (c) => {
+  return c.json({
+    status: 'online',
+    endpoints: ['/all/:object', '/img/:object', '/fact/:object'],
+    objects: OBJECTS,
+  })
+})
+
 app.get('/all/:object', async (c) => {
   const object = c.req.param('object').toLowerCase()
   if (!isValidObject(object)) {
