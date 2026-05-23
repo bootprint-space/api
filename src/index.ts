@@ -3,6 +3,10 @@ import { cors } from 'hono/cors'
 
 const OBJECTS = ['earth', 'jupiter', 'mars', 'mercury', 'moon', 'saturn', 'sun', 'uranus', 'venus']
 
+const QUERIES: Record<string, string> = Object.fromEntries(
+  OBJECTS.map(o => [o, `SELECT id, fact FROM \`${o}\` ORDER BY RANDOM() LIMIT 1`])
+)
+
 type Bindings = {
   DB: D1Database
   CDN: R2Bucket
@@ -28,7 +32,7 @@ async function getRandomImage(cdn: R2Bucket, object: string) {
 
 async function getRandomFact(db: D1Database, object: string) {
   const result = await db
-    .prepare(`SELECT id, fact FROM \`${object}\` ORDER BY RANDOM() LIMIT 1`)
+    .prepare(QUERIES[object])
     .first<{ id: string; fact: string }>()
   if (!result) return null
   return { fact: result.fact, fact_id: result.id }
