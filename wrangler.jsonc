@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bootprint-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-23",
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bootprint-facts",
+      "database_id": "176ac141-97bf-4254-aa8d-7cd727436a68"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "CDN",
+      "bucket_name": "bootprint-cdn"
+    }
+  ]
+}
