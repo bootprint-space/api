@@ -50,6 +50,14 @@ function getClientIdentity(c: { req: { header(name: string): string | undefined 
   return identityParts.join('|')
 }
 
+async function hashIdentifier(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value)
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export class RateLimiter implements DurableObject {
   constructor(private state: DurableObjectState) {}
 
@@ -121,7 +129,9 @@ app.use('*', async (c, next) => {
     c.req.header('cf-connecting-ip') ??
     c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
     'unknown'
-  const clientAddress = clientIdentifier || fallbackAddress
+  const clientAddress = clientIdentifier
+    ? `client:${await hashIdentifier(clientIdentifier)}`
+    : `ip:${fallbackAddress}`
 
   const limiter = c.env.RATE_LIMITER.getByName(clientAddress)
   const response = await limiter.fetch('https://rate-limiter/check', { method: 'POST' })
