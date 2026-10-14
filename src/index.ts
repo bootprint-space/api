@@ -77,8 +77,20 @@ function getRateLimitIdentity(c: { req: { header(name: string): string | undefin
     const value = c.req.header(headerName)?.trim()
     return value ? [`${headerName}=${value}`] : []
   })
-  
+
   return identityParts.join('|')
+}
+
+export async function buildRateLimitBucketKey(c: { req: { header(name: string): string | undefined } }): Promise<string> {
+  const clientIdentifier = getRateLimitIdentity(c)
+  const fallbackAddress =
+    c.req.header('cf-connecting-ip') ??
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+    'unknown'
+
+  const rawValue = clientIdentifier || fallbackAddress
+  const bucketType = clientIdentifier ? 'client' : 'ip'
+  return `${bucketType}:${await hashIdentifier(rawValue)}`
 }
 
 async function hashIdentifier(value: string): Promise<string> {
@@ -175,14 +187,7 @@ app.use('*', async (c, next) => {
 
 app.use('*', async (c, next) => {
   const authToken = getAuthToken(c)
-  const clientIdentifier = getRateLimitIdentity(c)
-  const fallbackAddress =
-    c.req.header('cf-connecting-ip') ??
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
-    'unknown'
-  const clientAddress = clientIdentifier
-    ? `client:${await hashIdentifier(clientIdentifier)}`
-    : `ip:${fallbackAddress}`
+  const clientAddress = await buildRateLimitBucketKey(c)
 
   const limiter = c.env.RATE_LIMITER.getByName(clientAddress)
   const response = await limiter.fetch('https://rate-limiter/check', { method: 'POST' })

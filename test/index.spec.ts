@@ -1,6 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { describe, it, expect } from 'vitest'
-import worker from '../src/index'
+import worker, { buildRateLimitBucketKey } from '../src/index'
 
 function createRequest(
   path: string,
@@ -38,6 +38,18 @@ function createRequest(
 }
 
 describe('Bootprint API', () => {
+  it('hashes fallback IP rate-limit buckets before storing or logging them', async () => {
+    const headers = new Map<string, string>([['cf-connecting-ip', '203.0.113.42']])
+    const key = await buildRateLimitBucketKey({
+      req: {
+        header: (name: string) => headers.get(name),
+      },
+    })
+
+    expect(key).toBe(`ip:${await crypto.subtle.digest('SHA-256', new TextEncoder().encode('203.0.113.42')).then((hash) => Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))}`)
+    expect(key).not.toContain('203.0.113.42')
+  })
+
   it('GET / returns online status', async () => {
     const request = createRequest('/', '203.0.113.1')
     const ctx = createExecutionContext()
