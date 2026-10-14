@@ -128,6 +128,48 @@ describe('Bootprint API', () => {
     expect(finalResponse.status).toBe(429)
   })
 
+  it('GET /health reports API health and dependency status', async () => {
+    const request = createRequest('/health', '203.0.113.10')
+    const ctx = createExecutionContext()
+    const response = await worker.fetch(request, env, ctx)
+    await waitOnExecutionContext(ctx)
+
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as {
+      status: string
+      checks: { api: string; database: string; storage: string }
+    }
+    expect(json.status).toBe('ok')
+    expect(json.checks.api).toBe('ok')
+    expect(json.checks.database).toBe('ok')
+    expect(json.checks.storage).toBe('ok')
+  })
+
+  it('does not use Authorization headers in the rate-limit identity bucket', async () => {
+    const clientIdentity = {
+      id: 'client-auth-separate',
+      name: 'bootprint-web',
+      type: 'browser',
+      version: '1.0.0',
+    }
+
+    const requestA = createRequest('/', '203.0.113.20', clientIdentity)
+    requestA.headers.set('Authorization', 'Bearer token-a')
+
+    const ctxA = createExecutionContext()
+    const responseA = await worker.fetch(requestA, env, ctxA)
+    await waitOnExecutionContext(ctxA)
+    expect(responseA.status).toBe(200)
+
+    const requestB = createRequest('/', '203.0.113.20', clientIdentity)
+    requestB.headers.set('Authorization', 'Bearer token-b')
+
+    const ctxB = createExecutionContext()
+    const responseB = await worker.fetch(requestB, env, ctxB)
+    await waitOnExecutionContext(ctxB)
+    expect(responseB.status).toBe(200)
+  })
+
   it('allows client identity headers in CORS preflight and exposes rate limit headers', async () => {
     const request = new Request('http://localhost/', {
       method: 'OPTIONS',

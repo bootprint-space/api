@@ -1,9 +1,14 @@
 import { Hono } from 'hono'
-import { cors } from 'hono/cors'
+import { sentry } from '@sentry/hono/cloudflare'
+import * as Sentry from '@sentry/cloudflare'
 
 const OBJECTS = ['earth', 'jupiter', 'mars', 'mercury', 'moon', 'saturn', 'sun', 'uranus', 'venus']
 const RATE_LIMIT_MAX_REQUESTS = 60
 const RATE_LIMIT_WINDOW_MS = 60_000
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://1511117190450122883.discordsays.com',
+  'http://localhost:3000',
+]
 const CLIENT_IDENTITY_HEADERS = [
   'x-client-id',
   'x-client-name',
@@ -19,6 +24,9 @@ type Bindings = {
   DB: D1Database
   CDN: R2Bucket
   RATE_LIMITER: DurableObjectNamespace
+  ALLOWED_ORIGINS?: string
+  SENTRY_DSN?: string
+  ENVIRONMENT?: string
 }
 
 type RateLimitState = {
@@ -41,12 +49,37 @@ function formatRetryDelay(totalSeconds: number): string {
   return `${totalSeconds} second${totalSeconds === 1 ? '' : 's'}`
 }
 
-function getClientIdentity(c: { req: { header(name: string): string | undefined } }): string {
+function getAllowedOrigins(bindings?: Pick<Bindings, 'ALLOWED_ORIGINS'>): string[] {
+  const rawOrigins = bindings?.ALLOWED_ORIGINS?.trim()
+  if (!rawOrigins) return DEFAULT_ALLOWED_ORIGINS
+
+  return rawOrigins
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+}
+
+function ensureSentryInitialized(bindings?: Pick<Bindings, 'SENTRY_DSN' | 'ENVIRONMENT'>): void {
+  if (!bindings?.SENTRY_DSN || (globalThis as { __bootprint_sentry_initialized?: boolean }).__bootprint_sentry_initialized) {
+    return
+  }
+
+  ;(globalThis as { __bootprint_sentry_initialized?: boolean }).__bootprint_sentry_initialized = true
+}
+
+function getAuthToken(c: { req: { header(name: string): string | undefined } }): string | null {
+  const token = c.req.header('Authorization') ?? c.req.header('authorization')
+  return token?.trim() ? token.trim() : null
+}
+
+function getRateLimitIdentity(c: { req: { header(name: string): string | undefined } }): string {
   const identityParts = CLIENT_IDENTITY_HEADERS.flatMap((headerName) => {
     const value = c.req.header(headerName)?.trim()
     return value ? [`${headerName}=${value}`] : []
   })
 
+  // Authentication is intentionally kept separate from the rate-limit identity.
+  // The Authorization header is never used to form the limiter bucket.
   return identityParts.join('|')
 }
 
@@ -102,29 +135,49 @@ export class RateLimiter implements DurableObject {
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.use(
-  '*',
-  cors({
-    origin: [
-      'https://1511117190450122883.discordsays.com',
-      'http://localhost:3000'
-    ],
-    allowHeaders: [...CLIENT_IDENTITY_HEADERS],
-    exposeHeaders: [
-      'Retry-After',
-      'X-RateLimit-Limit',
-      'X-RateLimit-Remaining',
-      'X-RateLimit-Reset',
-    ],
-    allowMethods: ['GET', 'OPTIONS'],
-  })
+  sentry(app, (env) => ({
+    dsn: env.SENTRY_DSN,
+    environment: env.ENVIRONMENT ?? 'production',
+    tracesSampleRate: 1.0,
+  }))
 )
 
 app.use('*', async (c, next) => {
-  if (c.req.method === 'OPTIONS') {
-    return next()
+  ensureSentryInitialized(c.env)
+
+  const origin = c.req.header('Origin')
+  const allowedOrigins = getAllowedOrigins(c.env)
+  const isAllowedOrigin = origin
+    ? allowedOrigins.some((allowedOrigin) => {
+        try {
+          return new URL(allowedOrigin).origin === origin
+        } catch {
+          return allowedOrigin === origin
+        }
+      })
+    : false
+
+  if (origin && isAllowedOrigin) {
+    c.header('Access-Control-Allow-Origin', origin)
   }
 
-  const clientIdentifier = getClientIdentity(c)
+  c.header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  c.header('Access-Control-Allow-Headers', CLIENT_IDENTITY_HEADERS.join(', '))
+  c.header(
+    'Access-Control-Expose-Headers',
+    ['Retry-After', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'].join(', ')
+  )
+
+  if (c.req.method === 'OPTIONS') {
+    return c.body(null, 204)
+  }
+
+  await next()
+})
+
+app.use('*', async (c, next) => {
+  const authToken = getAuthToken(c)
+  const clientIdentifier = getRateLimitIdentity(c)
   const fallbackAddress =
     c.req.header('cf-connecting-ip') ??
     c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
@@ -139,6 +192,18 @@ app.use('*', async (c, next) => {
 
   if (!result.allowed) {
     const retryAfterSeconds = Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000))
+
+    Sentry.withScope((scope) => {
+      scope.setTag('component', 'rate-limiter')
+      scope.setExtra('route', c.req.path)
+      scope.setExtra('client_address', clientAddress)
+      scope.setExtra('auth_present', Boolean(authToken))
+      scope.setExtra('retry_after_seconds', retryAfterSeconds)
+      scope.setExtra('remaining', 0)
+      scope.setLevel('warning')
+      Sentry.captureMessage('Rate limit exceeded')
+    })
+
     return c.json(
       { error: `Rate limit exceeded. Please wait ${formatRetryDelay(retryAfterSeconds)} before trying again.` },
       429,
@@ -180,6 +245,63 @@ async function getRandomFact(db: D1Database, object: string) {
   return { fact: result.fact, fact_id: result.id }
 }
 
+app.get('/health', async (c) => {
+  ensureSentryInitialized(c.env)
+
+  const checks = {
+    api: 'ok',
+    database: 'unknown',
+    storage: 'unknown',
+  }
+
+  let isHealthy = true
+
+  try {
+    await c.env.DB.prepare('SELECT 1').first()
+    checks.database = 'ok'
+  } catch (error) {
+    checks.database = 'error'
+    isHealthy = false
+
+    Sentry.withScope((scope) => {
+      scope.setTag('component', 'database')
+      scope.setLevel('error')
+      Sentry.captureException(error)
+    })
+  }
+
+  try {
+    await c.env.CDN.list({ prefix: '', limit: 1 })
+    checks.storage = 'ok'
+  } catch (error) {
+    checks.storage = 'error'
+    isHealthy = false
+
+    Sentry.withScope((scope) => {
+      scope.setTag('component', 'storage')
+      scope.setLevel('error')
+      Sentry.captureException(error)
+    })
+  }
+
+  return c.json(
+    {
+      status: isHealthy ? 'ok' : 'degraded',
+      checks,
+      timestamp: new Date().toISOString(),
+    },
+    isHealthy ? 200 : 503
+  )
+})
+
+app.get('/debug-sentry', () => {
+  Sentry.logger.info('User triggered test error', {
+    action: 'test_error_endpoint',
+  })
+
+  throw new Error('My first Sentry error!')
+})
+
 app.get('/', (c) => {
   return c.json({
     status: 'API is online.',
@@ -218,6 +340,20 @@ app.get('/fact/:object', async (c) => {
   const fact = await getRandomFact(c.env.DB, object)
   if (!fact) return c.json({ error: 'No facts found for this object.' }, 404)
   return c.json({ object, ...fact })
+})
+
+app.onError((err, c) => {
+  ensureSentryInitialized(c.env)
+
+  Sentry.withScope((scope) => {
+    scope.setTag('component', 'api')
+    scope.setExtra('route', c.req.path)
+    scope.setExtra('method', c.req.method)
+    scope.setLevel('error')
+    Sentry.captureException(err)
+  })
+
+  return c.json({ error: 'Internal server error.' }, 500)
 })
 
 app.notFound((c) => c.json({ error: 'Not found.' }, 404))
