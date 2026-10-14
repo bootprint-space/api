@@ -245,55 +245,6 @@ async function getRandomFact(db: D1Database, object: string) {
   return { fact: result.fact, fact_id: result.id }
 }
 
-app.get('/health', async (c) => {
-  ensureSentryInitialized(c.env)
-
-  const checks = {
-    api: 'ok',
-    database: 'unknown',
-    storage: 'unknown',
-  }
-
-  let isHealthy = true
-
-  try {
-    await c.env.DB.prepare('SELECT 1').first()
-    checks.database = 'ok'
-  } catch (error) {
-    checks.database = 'error'
-    isHealthy = false
-
-    Sentry.withScope((scope) => {
-      scope.setTag('component', 'database')
-      scope.setLevel('error')
-      Sentry.captureException(error)
-    })
-  }
-
-  try {
-    await c.env.CDN.list({ prefix: '', limit: 1 })
-    checks.storage = 'ok'
-  } catch (error) {
-    checks.storage = 'error'
-    isHealthy = false
-
-    Sentry.withScope((scope) => {
-      scope.setTag('component', 'storage')
-      scope.setLevel('error')
-      Sentry.captureException(error)
-    })
-  }
-
-  return c.json(
-    {
-      status: isHealthy ? 'ok' : 'degraded',
-      checks,
-      timestamp: new Date().toISOString(),
-    },
-    isHealthy ? 200 : 503
-  )
-})
-
 app.get('/', (c) => {
   return c.json({
     status: 'API is online.',

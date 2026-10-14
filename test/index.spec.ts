@@ -128,21 +128,13 @@ describe('Bootprint API', () => {
     expect(finalResponse.status).toBe(429)
   })
 
-  it('GET /health reports API health and dependency status', async () => {
+  it('GET /health returns 404 because the health endpoint is intentionally not public', async () => {
     const request = createRequest('/health', '203.0.113.10')
     const ctx = createExecutionContext()
     const response = await worker.fetch(request, env, ctx)
     await waitOnExecutionContext(ctx)
 
-    expect(response.status).toBe(200)
-    const json = (await response.json()) as {
-      status: string
-      checks: { api: string; database: string; storage: string }
-    }
-    expect(json.status).toBe('ok')
-    expect(json.checks.api).toBe('ok')
-    expect(json.checks.database).toBe('ok')
-    expect(json.checks.storage).toBe('ok')
+    expect(response.status).toBe(404)
   })
 
   it('does not use Authorization headers in the rate-limit identity bucket', async () => {
