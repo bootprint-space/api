@@ -44,9 +44,9 @@ describe('Bootprint API', () => {
     const response = await worker.fetch(request, env, ctx)
     await waitOnExecutionContext(ctx)
     expect(response.status).toBe(200)
-    const json = (await response.json()) as { status: string; rate_limit: string }
+    const json = (await response.json()) as { status: string }
     expect(json.status).toBe('API is online.')
-    expect(json.rate_limit).toBe('60 requests per minute.')
+    expect(json).not.toHaveProperty('rate_limit')
     expect(response.headers.get('x-ratelimit-limit')).toBe('60')
   })
 

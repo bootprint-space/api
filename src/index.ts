@@ -294,18 +294,9 @@ app.get('/health', async (c) => {
   )
 })
 
-app.get('/debug-sentry', () => {
-  Sentry.logger.info('User triggered test error', {
-    action: 'test_error_endpoint',
-  })
-
-  throw new Error('My first Sentry error!')
-})
-
 app.get('/', (c) => {
   return c.json({
     status: 'API is online.',
-    rate_limit: '60 requests per minute.',
   })
 })
 
