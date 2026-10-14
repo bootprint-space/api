@@ -50,6 +50,37 @@ describe('Bootprint API', () => {
     expect(key).not.toContain('203.0.113.42')
   })
 
+  it('rejects unsupported HTTP methods', async () => {
+    const request = new Request('http://localhost/', {
+      method: 'POST',
+      headers: {
+        'cf-connecting-ip': '203.0.113.1',
+      },
+    })
+
+    const ctx = createExecutionContext()
+    const response = await worker.fetch(request, env, ctx)
+    await waitOnExecutionContext(ctx)
+
+    expect(response.status).toBe(405)
+  })
+
+  it('rejects unexpected content types on read-only requests', async () => {
+    const request = new Request('http://localhost/', {
+      method: 'GET',
+      headers: {
+        'cf-connecting-ip': '203.0.113.11',
+        'content-type': 'application/xml',
+      },
+    })
+
+    const ctx = createExecutionContext()
+    const response = await worker.fetch(request, env, ctx)
+    await waitOnExecutionContext(ctx)
+
+    expect(response.status).toBe(415)
+  })
+
   it('GET / returns online status', async () => {
     const request = createRequest('/', '203.0.113.1')
     const ctx = createExecutionContext()

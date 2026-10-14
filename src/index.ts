@@ -5,6 +5,9 @@ import * as Sentry from '@sentry/cloudflare'
 const OBJECTS = ['earth', 'jupiter', 'mars', 'mercury', 'moon', 'saturn', 'sun', 'uranus', 'venus']
 const RATE_LIMIT_MAX_REQUESTS = 60
 const RATE_LIMIT_WINDOW_MS = 60_000
+const MAX_PATH_LENGTH = 256
+const MAX_OBJECT_NAME_LENGTH = 32
+const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://1511117190450122883.discordsays.com',
   'http://localhost:3000',
@@ -47,6 +50,43 @@ function formatRetryDelay(totalSeconds: number): string {
   }
 
   return `${totalSeconds} second${totalSeconds === 1 ? '' : 's'}`
+}
+
+function hasSuspiciousHeaderValue(value: string | null | undefined): boolean {
+  return Boolean(value && /[\r\n]/.test(value))
+}
+
+function validateRequest(c: { req: { method: string; path: string; query: () => Record<string, string | string[] | undefined>; header(name: string): string | undefined } }): Response | null {
+  const method = c.req.method.toUpperCase()
+  if (!ALLOWED_METHODS.has(method)) {
+    return c.json({ error: 'Method not allowed.' }, 405)
+  }
+
+  if (c.req.path.length > MAX_PATH_LENGTH) {
+    return c.json({ error: 'Request path too long.' }, 414)
+  }
+
+  const query = c.req.query()
+  if (Object.keys(query).length > 0) {
+    return c.json({ error: 'Query parameters are not supported.' }, 400)
+  }
+
+  const contentType = c.req.header('content-type')
+  if (contentType && !['application/json', 'text/plain', 'application/x-www-form-urlencoded'].some((allowedType) => contentType.startsWith(allowedType))) {
+    return c.json({ error: 'Unsupported content type.' }, 415)
+  }
+
+  const origin = c.req.header('Origin')
+  if (hasSuspiciousHeaderValue(origin)) {
+    return c.json({ error: 'Invalid Origin header.' }, 400)
+  }
+
+  const host = c.req.header('Host')
+  if (hasSuspiciousHeaderValue(host) || (host && host.length > 255)) {
+    return c.json({ error: 'Invalid Host header.' }, 400)
+  }
+
+  return null
 }
 
 function getAllowedOrigins(bindings?: Pick<Bindings, 'ALLOWED_ORIGINS'>): string[] {
@@ -153,6 +193,11 @@ app.use(
 )
 
 app.use('*', async (c, next) => {
+  const rejected = validateRequest(c)
+  if (rejected) {
+    return rejected
+  }
+
   ensureSentryInitialized(c.env)
 
   const origin = c.req.header('Origin')
@@ -227,6 +272,10 @@ app.use('*', async (c, next) => {
 })
 
 function isValidObject(object: string): boolean {
+  if (!object || object.length > MAX_OBJECT_NAME_LENGTH || object.length < 1) {
+    return false
+  }
+
   return OBJECTS.includes(object.toLowerCase())
 }
 
