@@ -77,9 +77,7 @@ function getRateLimitIdentity(c: { req: { header(name: string): string | undefin
     const value = c.req.header(headerName)?.trim()
     return value ? [`${headerName}=${value}`] : []
   })
-
-  // Authentication is intentionally kept separate from the rate-limit identity.
-  // The Authorization header is never used to form the limiter bucket.
+  
   return identityParts.join('|')
 }
 
